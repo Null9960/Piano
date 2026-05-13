@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { HandData } from '../utils/gestureDetection';
+import { loadMediaPipeHandsConstructor } from '../utils/loadMediaPipeHands';
 
 export type CameraStatus =
   | 'idle'
@@ -24,6 +25,18 @@ export interface UseHandTrackingReturn {
   error: string | null;
 }
 
+const MEDIAPIPE_HANDS_VERSION = '0.4.1675469240';
+
+type HandsInstance = {
+  setOptions: (options: Record<string, unknown>) => void;
+  onResults: (callback: (results: {
+    multiHandLandmarks?: { x: number; y: number; z: number }[][];
+    multiHandedness?: { label: string }[];
+  }) => void) => void;
+  send: (options: { image: HTMLVideoElement }) => Promise<void>;
+  close?: () => void;
+};
+
 export function useHandTracking({
   enabled,
   videoRef,
@@ -35,9 +48,10 @@ export function useHandTracking({
   const [cameraStatus, setCameraStatus] = useState<CameraStatus>('idle');
   const [error, setError] = useState<string | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
-  const handsRef = useRef<unknown>(null);
+  const handsRef = useRef<HandsInstance | null>(null);
   const animFrameRef = useRef<number | null>(null);
   const mountedRef = useRef(true);
+  const runningRef = useRef(false);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -46,18 +60,17 @@ export function useHandTracking({
     };
   }, []);
 
-  // ─── Draw skeleton ──────────────────────────────────────────────────────────
   const drawHand = useCallback(
     (ctx: CanvasRenderingContext2D, landmarks: { x: number; y: number; z: number }[], w: number, h: number) => {
       if (!drawSkeleton) return;
 
-      const CONNECTIONS = [
-        [0, 1], [1, 2], [2, 3], [3, 4],       // thumb
-        [0, 5], [5, 6], [6, 7], [7, 8],       // index
-        [0, 9], [9, 10], [10, 11], [11, 12],  // middle
-        [0, 13], [13, 14], [14, 15], [15, 16],// ring
-        [0, 17], [17, 18], [18, 19], [19, 20],// pinky
-        [5, 9], [9, 13], [13, 17],             // palm
+      const connections = [
+        [0, 1], [1, 2], [2, 3], [3, 4],
+        [0, 5], [5, 6], [6, 7], [7, 8],
+        [0, 9], [9, 10], [10, 11], [11, 12],
+        [0, 13], [13, 14], [14, 15], [15, 16],
+        [0, 17], [17, 18], [18, 19], [19, 20],
+        [5, 9], [9, 13], [13, 17],
       ];
 
       const pt = (lm: { x: number; y: number }) => ({
@@ -67,7 +80,7 @@ export function useHandTracking({
 
       ctx.strokeStyle = 'rgba(251, 191, 36, 0.9)';
       ctx.lineWidth = 2;
-      for (const [a, b] of CONNECTIONS) {
+      for (const [a, b] of connections) {
         const p1 = pt(landmarks[a]);
         const p2 = pt(landmarks[b]);
         ctx.beginPath();
@@ -76,7 +89,6 @@ export function useHandTracking({
         ctx.stroke();
       }
 
-      // Draw landmark dots
       for (let i = 0; i < landmarks.length; i++) {
         const p = pt(landmarks[i]);
         ctx.beginPath();
@@ -88,59 +100,66 @@ export function useHandTracking({
     [drawSkeleton, mirrored],
   );
 
-  // ─── Camera detection loop ──────────────────────────────────────────────────
   const runDetection = useCallback(async () => {
     const video = videoRef.current;
     const canvas = canvasRef.current;
-    const hands = handsRef.current as { send: (options: { image: HTMLVideoElement }) => Promise<void> } | null;
+    const hands = handsRef.current;
 
-    if (!video || !canvas || !hands || !mountedRef.current) return;
-    if (video.readyState < 2) {
+    if (!video || !canvas || !hands || !mountedRef.current || !runningRef.current) return;
+    if (video.readyState < 2 || video.videoWidth === 0 || video.videoHeight === 0) {
       animFrameRef.current = requestAnimationFrame(runDetection);
       return;
     }
 
     canvas.width = video.videoWidth;
     canvas.height = video.videoHeight;
-    const ctx = canvas.getContext('2d')!;
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    const ctx = canvas.getContext('2d');
+    ctx?.clearRect(0, 0, canvas.width, canvas.height);
 
-    await hands.send({ image: video });
-
-    if (mountedRef.current) {
-      animFrameRef.current = requestAnimationFrame(runDetection);
+    try {
+      await hands.send({ image: video });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error('[HandTracking] hands.send failed', err);
+      setError(`Camera error: ${message}`);
+    } finally {
+      if (mountedRef.current && runningRef.current) {
+        animFrameRef.current = requestAnimationFrame(runDetection);
+      }
     }
   }, [videoRef, canvasRef]);
 
-  // ─── Start camera ───────────────────────────────────────────────────────────
   const startCamera = useCallback(async () => {
-    if (cameraStatus === 'active') return;
+    if (cameraStatus === 'active' || cameraStatus === 'requesting') return;
     setCameraStatus('requesting');
     setError(null);
 
     try {
+      if (!navigator.mediaDevices?.getUserMedia) {
+        throw new Error('Camera API unavailable. Use HTTPS or localhost.');
+      }
+
+      console.info('[HandTracking] requesting camera');
       const stream = await navigator.mediaDevices.getUserMedia({
         video: { width: { ideal: 640 }, height: { ideal: 480 }, facingMode: 'user' },
       });
 
       if (!mountedRef.current) {
-        stream.getTracks().forEach((t) => t.stop());
+        stream.getTracks().forEach((track) => track.stop());
         return;
       }
 
       streamRef.current = stream;
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream;
-        await videoRef.current.play();
-      }
+      if (!videoRef.current) throw new Error('Video element is not mounted.');
+      videoRef.current.srcObject = stream;
+      await videoRef.current.play();
 
-      // Dynamically import MediaPipe Hands
-      const { Hands } = await import('@mediapipe/hands');
-
+      console.info('[HandTracking] loading MediaPipe Hands');
+      const Hands = await loadMediaPipeHandsConstructor();
       const handsInstance = new Hands({
         locateFile: (file: string) =>
-          `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`,
-      });
+          `https://cdn.jsdelivr.net/npm/@mediapipe/hands@${MEDIAPIPE_HANDS_VERSION}/${file}`,
+      }) as HandsInstance;
 
       handsInstance.setOptions({
         maxNumHands: 2,
@@ -149,39 +168,35 @@ export function useHandTracking({
         minTrackingConfidence: 0.5,
       });
 
-      handsInstance.onResults((results: {
-        multiHandLandmarks?: { x: number; y: number; z: number }[][];
-        multiHandedness?: { label: string }[];
-      }) => {
+      handsInstance.onResults((results) => {
         if (!mountedRef.current) return;
 
         const canvas = canvasRef.current;
+        const handsData: HandData[] = [];
         if (canvas) {
-          const ctx = canvas.getContext('2d')!;
-          ctx.clearRect(0, 0, canvas.width, canvas.height);
+          const ctx = canvas.getContext('2d');
+          ctx?.clearRect(0, 0, canvas.width, canvas.height);
 
-          const handsData: HandData[] = [];
-
-          if (results.multiHandLandmarks) {
-            results.multiHandLandmarks.forEach((landmarks, i) => {
-              const handedness = results.multiHandedness?.[i]?.label ?? 'Right';
-              drawHand(ctx, landmarks, canvas.width, canvas.height);
-              handsData.push({
-                landmarks: landmarks as { x: number; y: number; z: number }[],
-                handedness: handedness as 'Left' | 'Right',
-              });
+          results.multiHandLandmarks?.forEach((landmarks, i) => {
+            const handedness = results.multiHandedness?.[i]?.label ?? 'Right';
+            if (ctx) drawHand(ctx, landmarks, canvas.width, canvas.height);
+            handsData.push({
+              landmarks,
+              handedness: handedness as 'Left' | 'Right',
             });
-          }
-
-          onHandsDetected(handsData);
+          });
         }
+
+        onHandsDetected(handsData);
       });
 
       handsRef.current = handsInstance;
+      runningRef.current = true;
       setCameraStatus('active');
       animFrameRef.current = requestAnimationFrame(runDetection);
     } catch (err) {
       if (!mountedRef.current) return;
+      runningRef.current = false;
 
       if (err instanceof DOMException && err.name === 'NotAllowedError') {
         setCameraStatus('denied');
@@ -190,16 +205,20 @@ export function useHandTracking({
         setCameraStatus('error');
         setError(`Camera error: ${err instanceof Error ? err.message : String(err)}`);
       }
+
+      streamRef.current?.getTracks().forEach((track) => track.stop());
+      streamRef.current = null;
+      if (videoRef.current) videoRef.current.srcObject = null;
     }
   }, [cameraStatus, videoRef, canvasRef, runDetection, drawHand, onHandsDetected]);
 
-  // ─── Stop camera ────────────────────────────────────────────────────────────
   const stopCamera = useCallback(() => {
+    runningRef.current = false;
     if (animFrameRef.current !== null) {
       cancelAnimationFrame(animFrameRef.current);
       animFrameRef.current = null;
     }
-    streamRef.current?.getTracks().forEach((t) => t.stop());
+    streamRef.current?.getTracks().forEach((track) => track.stop());
     streamRef.current = null;
     if (videoRef.current) videoRef.current.srcObject = null;
 
@@ -209,15 +228,13 @@ export function useHandTracking({
       ctx?.clearRect(0, 0, canvas.width, canvas.height);
     }
 
-    setCameraStatus('idle');
+    try { handsRef.current?.close?.(); } catch { /* best effort */ }
     handsRef.current = null;
+    setCameraStatus('idle');
   }, [videoRef, canvasRef]);
 
-  // Re-run detection loop when enabled changes
   useEffect(() => {
-    if (!enabled && cameraStatus === 'active') {
-      stopCamera();
-    }
+    if (!enabled && cameraStatus === 'active') stopCamera();
   }, [enabled, cameraStatus, stopCamera]);
 
   return { cameraStatus, startCamera, stopCamera, error };
