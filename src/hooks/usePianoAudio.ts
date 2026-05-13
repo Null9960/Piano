@@ -1,66 +1,176 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import * as Tone from 'tone';
+import { PIANO_SAMPLE_BASE_URL, PIANO_SAMPLE_URLS } from '../utils/audioSamples';
+
+export type AudioStatus = 'locked' | 'starting' | 'loading-samples' | 'ready' | 'error';
+export type SampleStatus = 'idle' | 'loading' | 'loaded' | 'error';
 
 export interface AudioOptions { volume?: number; sustain?: boolean; }
 export interface UsePianoAudioReturn {
-  playNote: (note: string) => void;
+  playNote: (note: string, velocity?: number) => void;
   stopNote: (note: string) => void;
   setVolume: (db: number) => void;
   setSustain: (on: boolean) => void;
+  unlockAudio: () => Promise<void>;
+  allNotesOff: () => void;
   isReady: boolean;
+  audioStatus: AudioStatus;
+  sampleStatus: SampleStatus;
+  audioError: string | null;
 }
 
 export function usePianoAudio(options?: AudioOptions): UsePianoAudioReturn {
-  const synthRef = useRef<Tone.PolySynth | null>(null);
+  const samplerRef = useRef<Tone.Sampler | null>(null);
+  const fallbackSynthRef = useRef<Tone.PolySynth | null>(null);
   const sustainRef = useRef(options?.sustain ?? false);
-  const activeNotes = useRef<Set<string>>(new Set());
-  const [isReady, setIsReady] = useState(false);
+  const activeNotesRef = useRef<Set<string>>(new Set());
+  const sustainedNotesRef = useRef<Set<string>>(new Set());
+  const unlockedRef = useRef(false);
+  const [audioStatus, setAudioStatus] = useState<AudioStatus>('locked');
+  const [sampleStatus, setSampleStatus] = useState<SampleStatus>('idle');
+  const [audioError, setAudioError] = useState<string | null>(null);
+
+  const setVolume = useCallback((db: number) => {
+    if (samplerRef.current) samplerRef.current.volume.value = db;
+    if (fallbackSynthRef.current) fallbackSynthRef.current.volume.value = db;
+  }, []);
+
+  const allNotesOff = useCallback(() => {
+    const now = Tone.now();
+    const notes = new Set([...activeNotesRef.current, ...sustainedNotesRef.current]);
+    notes.forEach((note) => {
+      try { samplerRef.current?.triggerRelease(note, now); } catch { /* noop */ }
+      try { fallbackSynthRef.current?.triggerRelease(note, now); } catch { /* noop */ }
+    });
+    activeNotesRef.current.clear();
+    sustainedNotesRef.current.clear();
+  }, []);
 
   useEffect(() => {
-    const synth = new Tone.PolySynth(Tone.Synth, {
+    let cancelled = false;
+    setSampleStatus('loading');
+
+    const limiter = new Tone.Limiter(-1).toDestination();
+    const reverb = new Tone.Reverb({ decay: 1.8, wet: 0.12 }).connect(limiter);
+
+    const fallbackSynth = new Tone.PolySynth(Tone.Synth, {
       oscillator: { type: 'triangle' },
-      envelope: { attack: 0.002, decay: 1.2, sustain: 0.15, release: 1.8 },
+      envelope: { attack: 0.002, decay: 0.9, sustain: 0.2, release: 1.2 },
       volume: options?.volume ?? -8,
+    }).connect(reverb);
+
+    const sampler = new Tone.Sampler({
+      urls: PIANO_SAMPLE_URLS,
+      baseUrl: PIANO_SAMPLE_BASE_URL,
+      release: 1.4,
+      volume: options?.volume ?? -8,
+      onload: () => {
+        if (cancelled) return;
+        setSampleStatus('loaded');
+        if (unlockedRef.current) setAudioStatus('ready');
+      },
+    }).connect(reverb);
+
+    samplerRef.current = sampler;
+    fallbackSynthRef.current = fallbackSynth;
+
+    Tone.loaded().then(() => {
+      if (cancelled) return;
+      setSampleStatus('loaded');
+      if (unlockedRef.current) setAudioStatus('ready');
+    }).catch((err: unknown) => {
+      if (cancelled) return;
+      setSampleStatus('error');
+      setAudioStatus('error');
+      setAudioError(err instanceof Error ? err.message : String(err));
     });
-    const reverb = new Tone.Reverb({ decay: 1.5, wet: 0.18 });
-    reverb.toDestination();
-    synth.connect(reverb);
-    synthRef.current = synth;
-    setIsReady(true);
-    return () => { synth.dispose(); reverb.dispose(); synthRef.current = null; };
+
+    return () => {
+      cancelled = true;
+      allNotesOff();
+      sampler.dispose();
+      fallbackSynth.dispose();
+      reverb.dispose();
+      limiter.dispose();
+      samplerRef.current = null;
+      fallbackSynthRef.current = null;
+    };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const playNote = useCallback(async (note: string) => {
-    const synth = synthRef.current;
-    if (!synth) return;
-    await Tone.start();
-    if (activeNotes.current.has(note)) return;
-    activeNotes.current.add(note);
-    try { synth.triggerAttack(note, Tone.now()); } catch { /* ignore */ }
-  }, []);
+  useEffect(() => { setVolume(options?.volume ?? -8); }, [options?.volume, setVolume]);
+
+  const unlockAudio = useCallback(async () => {
+    setAudioError(null);
+    setAudioStatus('starting');
+    try {
+      await Tone.start();
+      unlockedRef.current = true;
+      setAudioStatus(sampleStatus === 'loaded' ? 'ready' : 'loading-samples');
+    } catch (err) {
+      unlockedRef.current = false;
+      setAudioStatus('error');
+      setAudioError(err instanceof Error ? err.message : String(err));
+    }
+  }, [sampleStatus]);
+
+  useEffect(() => {
+    if (unlockedRef.current && sampleStatus === 'loaded') setAudioStatus('ready');
+  }, [sampleStatus]);
+
+  const playNote = useCallback((note: string, velocity = 0.82) => {
+    if (!unlockedRef.current || audioStatus !== 'ready') return;
+    if (activeNotesRef.current.has(note)) return;
+    activeNotesRef.current.add(note);
+    sustainedNotesRef.current.delete(note);
+    try {
+      if (sampleStatus === 'loaded' && samplerRef.current) {
+        samplerRef.current.triggerAttack(note, Tone.now(), velocity);
+      } else {
+        fallbackSynthRef.current?.triggerAttack(note, Tone.now(), velocity);
+      }
+    } catch (err) {
+      setAudioError(err instanceof Error ? err.message : String(err));
+    }
+  }, [audioStatus, sampleStatus]);
 
   const stopNote = useCallback((note: string) => {
-    const synth = synthRef.current;
-    if (!synth || !activeNotes.current.has(note)) return;
-    activeNotes.current.delete(note);
-    if (sustainRef.current) return;
-    try { synth.triggerRelease(note, Tone.now()); } catch { /* ignore */ }
-  }, []);
-
-  const setVolume = useCallback((db: number) => {
-    if (synthRef.current) synthRef.current.volume.value = db;
+    if (!activeNotesRef.current.has(note)) return;
+    activeNotesRef.current.delete(note);
+    if (sustainRef.current) {
+      sustainedNotesRef.current.add(note);
+      return;
+    }
+    try {
+      samplerRef.current?.triggerRelease(note, Tone.now());
+      fallbackSynthRef.current?.triggerRelease(note, Tone.now());
+    } catch (err) {
+      setAudioError(err instanceof Error ? err.message : String(err));
+    }
   }, []);
 
   const setSustain = useCallback((on: boolean) => {
     sustainRef.current = on;
-    if (!on && synthRef.current) {
-      activeNotes.current.forEach((note) => {
-        try { synthRef.current!.triggerRelease(note, Tone.now()); } catch { /* ignore */ }
+    if (!on) {
+      const now = Tone.now();
+      sustainedNotesRef.current.forEach((note) => {
+        try { samplerRef.current?.triggerRelease(note, now); } catch { /* noop */ }
+        try { fallbackSynthRef.current?.triggerRelease(note, now); } catch { /* noop */ }
       });
-      activeNotes.current.clear();
+      sustainedNotesRef.current.clear();
     }
   }, []);
 
-  return { playNote, stopNote, setVolume, setSustain, isReady };
+  return {
+    playNote,
+    stopNote,
+    setVolume,
+    setSustain,
+    unlockAudio,
+    allNotesOff,
+    isReady: audioStatus === 'ready' && sampleStatus === 'loaded',
+    audioStatus,
+    sampleStatus,
+    audioError,
+  };
 }
