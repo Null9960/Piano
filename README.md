@@ -16,15 +16,23 @@ npm run dev
 
 ### Build for Production
 ```bash
-npm run build   # output in dist/
-npm run preview # preview locally
+npm run build
+npm run preview
 ```
 
-Deploy `dist/` to Vercel, Netlify, or GitHub Pages as-is.
+Deploy `dist/` to Vercel or Netlify. For GitHub Pages, set `base: '/Piano/'` in `vite.config.ts` before building.
 
 ---
 
 ## How to Play
+
+### Audio
+The app now uses `Tone.Sampler` with piano samples loaded from the public Salamander sample set used by Tone.js examples.
+
+Important:
+- Browser audio must be unlocked by a user gesture.
+- Click/tap a piano key or press a mapped keyboard key once to unlock audio.
+- Samples require internet access unless they are later bundled locally.
 
 ### Keyboard Map
 | Keys | Notes |
@@ -35,9 +43,22 @@ Deploy `dist/` to Vercel, Netlify, or GitHub Pages as-is.
 | 2 3  5 6 7 | C#4 D#4  F#4 G#4 A#4 |
 
 ### Hand Tracking
-1. Click **Enable Camera** → grant permission
-2. Hold hand in front of webcam, index finger extended
-3. Move fingertip over a key, then **press down** quickly to trigger
+1. Click **Enable Camera** → grant permission.
+2. Hold hand in front of webcam, index finger extended.
+3. Move fingertip over a key, then press down quickly to trigger.
+
+---
+
+## Camera Troubleshooting
+
+If camera permission is granted but hand tracking does not work:
+
+1. Use Chrome first.
+2. Use `localhost` or an HTTPS deployment.
+3. If using StackBlitz/CodeSandbox, open the preview in a separate browser tab.
+4. Check browser console for MediaPipe loading errors.
+5. MediaPipe currently loads runtime files from CDN and requires internet access.
+6. If the camera preview works but hands are not detected, the likely failure is MediaPipe runtime loading or `hands.send()`.
 
 ---
 
@@ -47,37 +68,44 @@ Deploy `dist/` to Vercel, Netlify, or GitHub Pages as-is.
 src/
   components/  Piano, PianoKey, CameraPreview, SettingsPanel, HUD
   hooks/       usePianoAudio, useHandTracking, useKeyboardPiano
-  utils/       notes.ts, gestureDetection.ts
+  utils/       notes.ts, gestureDetection.ts, audioSamples.ts
   App.tsx
 ```
 
-## Extend to 88 Keys
+## Current Range
+
+The current keyboard range is C3–C6. This is intentional for the MVP because camera control is not precise enough for a full 88-key layout yet.
+
+## Extend to 88 Keys Later
 
 ```tsx
 <Piano midiStart={21} midiEnd={108} ... />
 ```
 
+A real 88-key mode should add horizontal scrolling, viewport mapping, and calibration before being exposed to users.
+
 ---
 
 ## Known Limitations
 
-1. **MediaPipe loads from CDN** on first use — needs internet
-2. **Press is delta-based** (Y movement), not physical contact
-3. **Single hand** tracked currently
-4. **Synthesized audio** (triangle PolySynth + reverb), not real samples
-5. Camera requires **HTTPS** (localhost is always allowed)
+1. MediaPipe loads from CDN on first use.
+2. Camera press is delta-based Y movement, not physical contact.
+3. Hand-to-key mapping still needs calibration and stronger diagnostics.
+4. Audio samples load from a public CDN.
+5. Camera requires HTTPS; localhost is allowed.
+6. Advanced gestures are not implemented yet.
 
 ---
 
 ## Suggested Next Steps
 
-- Sampled piano audio via Tone.Sampler + free sample pack
-- Two-hand polyphonic control
-- Velocity from fingertip downward speed
-- Sustain palm gesture
-- Recording + playback via Tone.Transport
-- MIDI output via Web MIDI API
-- Offline MediaPipe (bundle WASM locally)
+- Harden `useHandTracking` with detailed MediaPipe diagnostics.
+- Add explicit Enable Audio button wired in `App.tsx`.
+- Add a visible fingertip cursor/debug overlay.
+- Fix camera/video/canvas mirroring consistency.
+- Bundle MediaPipe and piano samples locally for reliability.
+- Add two-hand polyphonic control.
+- Add velocity from fingertip downward speed.
 
 ---
 
