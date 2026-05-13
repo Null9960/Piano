@@ -2,19 +2,21 @@ import { useCallback, useRef, useState } from 'react';
 import { findKeyAtPoint, getIndexTip, LANDMARK_INDEX } from '../utils/gestureDetection';
 import type { HandData, Landmark } from '../utils/gestureDetection';
 
+// ─── Types ────────────────────────────────────────────────────────────────────
 export interface HandControlPoint {
   id: string;
   handedness: 'Left' | 'Right';
   note: string | null;
-  xRatio: number;
-  yRatio: number;
-  pinchDistance: number;
+  xRatio: number;       // 0–1, smoothed
+  pinchDistance: number; // normalized 0–1
   isPinching: boolean;
   isPlaying: boolean;
 }
 
 interface Options {
   mirrored: boolean;
+  pinchOnThreshold: number;  // normalized distance to trigger note (e.g. 0.06)
+  pinchOffThreshold: number; // normalized distance to release note (e.g. 0.09)
   keyElementsRef: React.RefObject<Map<string, HTMLDivElement>>;
   pianoAreaRef: React.RefObject<HTMLDivElement | null>;
   onNoteOn: (noteId: string) => void;
@@ -24,44 +26,60 @@ interface Options {
 interface HandState {
   isPinching: boolean;
   activeNote: string | null;
+  smoothedX: number;     // EMA-smoothed normalized X
+  lastNoteTime: number;  // ms timestamp, for debounce between key changes
 }
 
-const PINCH_ON = 0.06;
-const PINCH_OFF = 0.085;
+// ─── Constants ────────────────────────────────────────────────────────────────
+const EMA_ALPHA      = 0.35; // smoothing factor (higher = more responsive, lower = smoother)
+const NOTE_DEBOUNCE_MS = 80; // min ms between note triggers while sliding
 
-function clamp01(value: number) {
-  return Math.max(0, Math.min(1, value));
-}
+function clamp01(v: number) { return Math.max(0, Math.min(1, v)); }
 
-function distance(a: Landmark, b: Landmark) {
-  const dx = a.x - b.x;
-  const dy = a.y - b.y;
-  const dz = (a.z ?? 0) - (b.z ?? 0);
+function dist3d(a: Landmark, b: Landmark) {
+  const dx = a.x - b.x, dy = a.y - b.y, dz = (a.z ?? 0) - (b.z ?? 0);
   return Math.sqrt(dx * dx + dy * dy + dz * dz);
 }
 
-function getThumbTip(hand: HandData) {
+function getThumbTip(hand: HandData): Landmark {
   return hand.landmarks[LANDMARK_INDEX.THUMB_TIP];
 }
 
-function buildKeyRects(keyElements: Map<string, HTMLDivElement>) {
+// Use handedness as stable key — MediaPipe guarantees at most one Left / one Right
+function handId(hand: HandData): string {
+  return hand.handedness; // 'Left' | 'Right'
+}
+
+function buildKeyRects(keyElements: Map<string, HTMLDivElement>): Map<string, DOMRect> {
   const rects = new Map<string, DOMRect>();
   keyElements.forEach((el, id) => rects.set(id, el.getBoundingClientRect()));
   return rects;
 }
 
-function getSampleY(keyRects: Map<string, DOMRect>) {
-  const firstWhite = [...keyRects.entries()].find(([id]) => !id.includes('#'))?.[1];
-  return firstWhite ? firstWhite.top + firstWhite.height * 0.62 : null;
+// Sample Y at 55% of white key height — reliable hit zone for both white and black keys
+function getPianoHitY(keyRects: Map<string, DOMRect>): number | null {
+  const whites = [...keyRects.entries()].filter(([id]) => !id.includes('#'));
+  if (!whites.length) return null;
+  const rect = whites[0][1];
+  return rect.top + rect.height * 0.55;
 }
 
-export function usePinchPianoControl({ mirrored, keyElementsRef, pianoAreaRef, onNoteOn, onNoteOff }: Options) {
+// ─── Hook ─────────────────────────────────────────────────────────────────────
+export function usePinchPianoControl({
+  mirrored,
+  pinchOnThreshold,
+  pinchOffThreshold,
+  keyElementsRef,
+  pianoAreaRef,
+  onNoteOn,
+  onNoteOff,
+}: Options) {
   const stateRef = useRef<Map<string, HandState>>(new Map());
-  const [controls, setControls] = useState<HandControlPoint[]>([]);
+  const [controls, setControls]             = useState<HandControlPoint[]>([]);
   const [highlightedNotes, setHighlightedNotes] = useState<Set<string>>(new Set());
-  const [handsDetected, setHandsDetected] = useState(0);
-  const [primaryNote, setPrimaryNote] = useState<string | null>(null);
-  const [pinchValue, setPinchValue] = useState(0);
+  const [handsDetected, setHandsDetected]   = useState(0);
+  const [primaryNote, setPrimaryNote]       = useState<string | null>(null);
+  const [pinchValue, setPinchValue]         = useState(0);
 
   const releaseAll = useCallback(() => {
     stateRef.current.forEach((state) => {
@@ -77,53 +95,95 @@ export function usePinchPianoControl({ mirrored, keyElementsRef, pianoAreaRef, o
 
   const handleHandsDetected = useCallback((hands: HandData[]) => {
     setHandsDetected(hands.length);
-    const pianoRect = pianoAreaRef.current?.getBoundingClientRect();
-    const keyRects = buildKeyRects(keyElementsRef.current ?? new Map());
-    const sampleY = getSampleY(keyRects);
 
-    if (!hands.length || !pianoRect || !sampleY || keyRects.size === 0) {
-      releaseAll();
+    const pianoRect = pianoAreaRef.current?.getBoundingClientRect();
+    const keyRects  = buildKeyRects(keyElementsRef.current ?? new Map());
+    const hitY      = getPianoHitY(keyRects);
+
+    // Release all and bail if piano not ready
+    if (!pianoRect || !hitY || keyRects.size === 0) {
+      if (hands.length === 0) releaseAll();
       return;
     }
 
-    const seen = new Set<string>();
+    const seenIds     = new Set<string>();
     const nextControls: HandControlPoint[] = [];
     const nextHighlighted = new Set<string>();
 
-    hands.forEach((hand, index) => {
-      const id = `${hand.handedness}-${index}`;
-      seen.add(id);
-      const indexTip = getIndexTip(hand);
-      const thumbTip = getThumbTip(hand);
-      const xRatio = clamp01(mirrored ? 1 - indexTip.x : indexTip.x);
-      const yRatio = clamp01(indexTip.y);
-      const mappedX = pianoRect.left + xRatio * pianoRect.width;
-      const note = findKeyAtPoint(mappedX, sampleY, keyRects);
-      const pinchDistance = distance(indexTip, thumbTip);
-      const prev = stateRef.current.get(id) ?? { isPinching: false, activeNote: null };
-      const isPinching = prev.isPinching ? pinchDistance < PINCH_OFF : pinchDistance < PINCH_ON;
-      let activeNote = prev.activeNote;
+    for (const hand of hands) {
+      const id        = handId(hand);
+      seenIds.add(id);
 
-      if (isPinching && note && !prev.isPinching) {
-        activeNote = note;
-        onNoteOn(note);
-      } else if (isPinching && note && prev.isPinching && prev.activeNote && prev.activeNote !== note) {
-        onNoteOff(prev.activeNote);
-        activeNote = note;
-        onNoteOn(note);
-      } else if (!isPinching && prev.isPinching && prev.activeNote) {
-        onNoteOff(prev.activeNote);
-        activeNote = null;
+      const indexTip    = getIndexTip(hand);
+      const thumbTip    = getThumbTip(hand);
+      const rawX        = clamp01(mirrored ? 1 - indexTip.x : indexTip.x);
+      const pinchDist   = dist3d(indexTip, thumbTip);
+
+      // ── EMA smoothing on X to reduce jitter ──
+      const prev = stateRef.current.get(id) ?? {
+        isPinching: false,
+        activeNote: null,
+        smoothedX: rawX,
+        lastNoteTime: 0,
+      };
+      const smoothedX = EMA_ALPHA * rawX + (1 - EMA_ALPHA) * prev.smoothedX;
+
+      // ── Hit-test: map smoothed X to piano coordinate ──
+      const mappedX   = pianoRect.left + smoothedX * pianoRect.width;
+      const hoveredNote = findKeyAtPoint(mappedX, hitY, keyRects);
+
+      // ── Pinch hysteresis (prevents rapid on/off oscillation) ──
+      const isPinching = prev.isPinching
+        ? pinchDist < pinchOffThreshold   // need to open past OFF threshold to release
+        : pinchDist < pinchOnThreshold;   // need to close past ON threshold to trigger
+
+      let activeNote = prev.activeNote;
+      const now = Date.now();
+
+      if (isPinching && hoveredNote) {
+        if (!prev.isPinching) {
+          // Pinch just closed → trigger note
+          if (activeNote && activeNote !== hoveredNote) { onNoteOff(activeNote); }
+          activeNote = hoveredNote;
+          onNoteOn(hoveredNote);
+        } else if (prev.isPinching && hoveredNote !== prev.activeNote) {
+          // Sliding to a new key while pinching — debounced glissando
+          if (now - prev.lastNoteTime > NOTE_DEBOUNCE_MS) {
+            if (activeNote) onNoteOff(activeNote);
+            activeNote = hoveredNote;
+            onNoteOn(hoveredNote);
+          }
+        }
+      } else if (!isPinching && prev.isPinching) {
+        // Pinch just opened → release
+        if (activeNote) { onNoteOff(activeNote); activeNote = null; }
       }
 
-      stateRef.current.set(id, { isPinching, activeNote });
-      if (note) nextHighlighted.add(note);
-      if (activeNote) nextHighlighted.add(activeNote);
-      nextControls.push({ id, handedness: hand.handedness, note, xRatio, yRatio, pinchDistance, isPinching, isPlaying: Boolean(activeNote) });
-    });
+      const nextState: HandState = {
+        isPinching,
+        activeNote,
+        smoothedX,
+        lastNoteTime: isPinching && hoveredNote !== prev.activeNote ? now : prev.lastNoteTime,
+      };
+      stateRef.current.set(id, nextState);
 
+      if (hoveredNote)   nextHighlighted.add(hoveredNote);
+      if (activeNote)    nextHighlighted.add(activeNote);
+
+      nextControls.push({
+        id,
+        handedness: hand.handedness,
+        note: hoveredNote,
+        xRatio: smoothedX,
+        pinchDistance: pinchDist,
+        isPinching,
+        isPlaying: Boolean(activeNote),
+      });
+    }
+
+    // Release notes from hands that disappeared
     stateRef.current.forEach((state, id) => {
-      if (!seen.has(id)) {
+      if (!seenIds.has(id)) {
         if (state.activeNote) onNoteOff(state.activeNote);
         stateRef.current.delete(id);
       }
@@ -131,9 +191,9 @@ export function usePinchPianoControl({ mirrored, keyElementsRef, pianoAreaRef, o
 
     setControls(nextControls);
     setHighlightedNotes(nextHighlighted);
-    setPrimaryNote(nextControls.find((control) => control.note)?.note ?? null);
+    setPrimaryNote(nextControls.find((c) => c.note)?.note ?? null);
     setPinchValue(nextControls[0]?.pinchDistance ?? 0);
-  }, [keyElementsRef, mirrored, onNoteOff, onNoteOn, pianoAreaRef, releaseAll]);
+  }, [mirrored, pinchOnThreshold, pinchOffThreshold, keyElementsRef, pianoAreaRef, onNoteOn, onNoteOff, releaseAll]);
 
   return { controls, highlightedNotes, handsDetected, primaryNote, pinchValue, handleHandsDetected, releaseAll };
 }
