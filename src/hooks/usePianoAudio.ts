@@ -118,8 +118,7 @@ export function usePianoAudio(options?: AudioOptions): UsePianoAudioReturn {
     if (unlockedRef.current && sampleStatus === 'loaded') setAudioStatus('ready');
   }, [sampleStatus]);
 
-  const playNote = useCallback((note: string, velocity = 0.82) => {
-    if (!unlockedRef.current || audioStatus !== 'ready') return;
+  const triggerNote = useCallback((note: string, velocity = 0.82) => {
     if (activeNotesRef.current.has(note)) return;
     activeNotesRef.current.add(note);
     sustainedNotesRef.current.delete(note);
@@ -132,7 +131,22 @@ export function usePianoAudio(options?: AudioOptions): UsePianoAudioReturn {
     } catch (err) {
       setAudioError(err instanceof Error ? err.message : String(err));
     }
-  }, [audioStatus, sampleStatus]);
+  }, [sampleStatus]);
+
+  const playNote = useCallback((note: string, velocity = 0.82) => {
+    if (!unlockedRef.current) {
+      void Tone.start().then(() => {
+        unlockedRef.current = true;
+        setAudioStatus(sampleStatus === 'loaded' ? 'ready' : 'loading-samples');
+        triggerNote(note, velocity);
+      }).catch((err: unknown) => {
+        setAudioStatus('error');
+        setAudioError(err instanceof Error ? err.message : String(err));
+      });
+      return;
+    }
+    triggerNote(note, velocity);
+  }, [sampleStatus, triggerNote]);
 
   const stopNote = useCallback((note: string) => {
     if (!activeNotesRef.current.has(note)) return;
