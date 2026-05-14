@@ -14,8 +14,8 @@ export interface UseHandTrackingOptions {
   videoRef: React.RefObject<HTMLVideoElement | null>;
   canvasRef: React.RefObject<HTMLCanvasElement | null>;
   onHandsDetected: (hands: HandData[]) => void;
-  mirrored?: boolean;
   drawSkeleton?: boolean;
+  targetFps?: number;
 }
 
 export interface UseHandTrackingReturn {
@@ -26,6 +26,8 @@ export interface UseHandTrackingReturn {
 }
 
 const MEDIAPIPE_HANDS_VERSION = '0.4.1675469240';
+const DEFAULT_TARGET_FPS = 30;
+const MAX_CONSECUTIVE_SEND_FAILURES = 3;
 
 type HandsInstance = {
   setOptions: (options: Record<string, unknown>) => void;
@@ -42,8 +44,8 @@ export function useHandTracking({
   videoRef,
   canvasRef,
   onHandsDetected,
-  mirrored = true,
   drawSkeleton = true,
+  targetFps = DEFAULT_TARGET_FPS,
 }: UseHandTrackingOptions): UseHandTrackingReturn {
   const [cameraStatus, setCameraStatus] = useState<CameraStatus>('idle');
   const [error, setError] = useState<string | null>(null);
@@ -52,6 +54,8 @@ export function useHandTracking({
   const animFrameRef = useRef<number | null>(null);
   const mountedRef = useRef(true);
   const runningRef = useRef(false);
+  const lastFrameAtRef = useRef(0);
+  const sendFailureCountRef = useRef(0);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -59,6 +63,12 @@ export function useHandTracking({
       mountedRef.current = false;
     };
   }, []);
+
+  const clearCanvas = useCallback(() => {
+    const canvas = canvasRef.current;
+    const ctx = canvas?.getContext('2d');
+    if (canvas && ctx) ctx.clearRect(0, 0, canvas.width, canvas.height);
+  }, [canvasRef]);
 
   const drawHand = useCallback(
     (ctx: CanvasRenderingContext2D, landmarks: { x: number; y: number; z: number }[], w: number, h: number) => {
@@ -73,10 +83,9 @@ export function useHandTracking({
         [5, 9], [9, 13], [13, 17],
       ];
 
-      const pt = (lm: { x: number; y: number }) => ({
-        x: mirrored ? (1 - lm.x) * w : lm.x * w,
-        y: lm.y * h,
-      });
+      // Draw in raw MediaPipe coordinates. CameraPreview mirrors both video and
+      // canvas with CSS when requested, so drawing logic must not mirror again.
+      const pt = (lm: { x: number; y: number }) => ({ x: lm.x * w, y: lm.y * h });
 
       ctx.strokeStyle = 'rgba(251, 191, 36, 0.9)';
       ctx.lineWidth = 2;
@@ -97,7 +106,7 @@ export function useHandTracking({
         ctx.fill();
       }
     },
-    [drawSkeleton, mirrored],
+    [drawSkeleton],
   );
 
   const runDetection = useCallback(async () => {
@@ -106,33 +115,53 @@ export function useHandTracking({
     const hands = handsRef.current;
 
     if (!video || !canvas || !hands || !mountedRef.current || !runningRef.current) return;
+
+    const now = performance.now();
+    const minFrameMs = 1000 / Math.max(1, targetFps);
+    if (now - lastFrameAtRef.current < minFrameMs) {
+      animFrameRef.current = requestAnimationFrame(runDetection);
+      return;
+    }
+
     if (video.readyState < 2 || video.videoWidth === 0 || video.videoHeight === 0) {
       animFrameRef.current = requestAnimationFrame(runDetection);
       return;
     }
 
+    lastFrameAtRef.current = now;
     canvas.width = video.videoWidth;
     canvas.height = video.videoHeight;
-    const ctx = canvas.getContext('2d');
-    ctx?.clearRect(0, 0, canvas.width, canvas.height);
+    clearCanvas();
 
     try {
       await hands.send({ image: video });
+      sendFailureCountRef.current = 0;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
+      sendFailureCountRef.current += 1;
       console.error('[HandTracking] hands.send failed', err);
-      setError(`Camera error: ${message}`);
+      setError(`MediaPipe error: ${message}`);
+      onHandsDetected([]);
+      clearCanvas();
+
+      if (sendFailureCountRef.current >= MAX_CONSECUTIVE_SEND_FAILURES) {
+        runningRef.current = false;
+        setCameraStatus('error');
+        setError(`MediaPipe stopped after repeated failures: ${message}`);
+      }
     } finally {
       if (mountedRef.current && runningRef.current) {
         animFrameRef.current = requestAnimationFrame(runDetection);
       }
     }
-  }, [videoRef, canvasRef]);
+  }, [videoRef, canvasRef, targetFps, clearCanvas, onHandsDetected]);
 
   const startCamera = useCallback(async () => {
     if (cameraStatus === 'active' || cameraStatus === 'requesting') return;
     setCameraStatus('requesting');
     setError(null);
+    sendFailureCountRef.current = 0;
+    lastFrameAtRef.current = 0;
 
     try {
       if (!navigator.mediaDevices?.getUserMedia) {
@@ -164,8 +193,8 @@ export function useHandTracking({
       handsInstance.setOptions({
         maxNumHands: 2,
         modelComplexity: 1,
-        minDetectionConfidence: 0.7,
-        minTrackingConfidence: 0.5,
+        minDetectionConfidence: 0.65,
+        minTrackingConfidence: 0.55,
       });
 
       handsInstance.onResults((results) => {
@@ -175,7 +204,7 @@ export function useHandTracking({
         const handsData: HandData[] = [];
         if (canvas) {
           const ctx = canvas.getContext('2d');
-          ctx?.clearRect(0, 0, canvas.width, canvas.height);
+          clearCanvas();
 
           results.multiHandLandmarks?.forEach((landmarks, i) => {
             const handedness = results.multiHandedness?.[i]?.label ?? 'Right';
@@ -197,6 +226,8 @@ export function useHandTracking({
     } catch (err) {
       if (!mountedRef.current) return;
       runningRef.current = false;
+      onHandsDetected([]);
+      clearCanvas();
 
       if (err instanceof DOMException && err.name === 'NotAllowedError') {
         setCameraStatus('denied');
@@ -210,7 +241,7 @@ export function useHandTracking({
       streamRef.current = null;
       if (videoRef.current) videoRef.current.srcObject = null;
     }
-  }, [cameraStatus, videoRef, canvasRef, runDetection, drawHand, onHandsDetected]);
+  }, [cameraStatus, videoRef, canvasRef, runDetection, drawHand, onHandsDetected, clearCanvas]);
 
   const stopCamera = useCallback(() => {
     runningRef.current = false;
@@ -221,17 +252,13 @@ export function useHandTracking({
     streamRef.current?.getTracks().forEach((track) => track.stop());
     streamRef.current = null;
     if (videoRef.current) videoRef.current.srcObject = null;
-
-    const canvas = canvasRef.current;
-    if (canvas) {
-      const ctx = canvas.getContext('2d');
-      ctx?.clearRect(0, 0, canvas.width, canvas.height);
-    }
+    onHandsDetected([]);
+    clearCanvas();
 
     try { handsRef.current?.close?.(); } catch { /* best effort */ }
     handsRef.current = null;
     setCameraStatus('idle');
-  }, [videoRef, canvasRef]);
+  }, [videoRef, onHandsDetected, clearCanvas]);
 
   useEffect(() => {
     if (!enabled && cameraStatus === 'active') stopCamera();
