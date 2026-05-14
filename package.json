@@ -4,8 +4,10 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "dev": "vite",
-    "build": "tsc -b && vite build",
+    "copy:mediapipe": "node scripts/copy-mediapipe-assets.mjs",
+    "postinstall": "npm run copy:mediapipe",
+    "dev": "npm run copy:mediapipe && vite",
+    "build": "npm run copy:mediapipe && tsc -b && vite build",
     "lint": "eslint .",
     "preview": "vite preview"
   },

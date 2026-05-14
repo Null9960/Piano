@@ -1,5 +1,5 @@
-import AppPinch from './AppPinch';
+import AppPiano from './AppPiano';
 
 export default function App() {
-  return <AppPinch />;
+  return <AppPiano />;
 }

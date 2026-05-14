@@ -1,17 +1,20 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useMemo, useRef } from 'react';
 import { PianoKey } from './PianoKey';
 import { generateNotes, countWhiteKeys } from '../utils/notes';
-import type { PianoNote } from '../utils/notes';
 
 interface PianoProps {
   activeNotes: Set<string>;
   highlightedNotes?: Set<string>;
-  onNoteOn: (noteId: string) => void;
+  onNoteOn: (noteId: string, velocity?: number) => void;
   onNoteOff: (noteId: string) => void;
   onKeyRectsReady: (rects: Map<string, HTMLDivElement>) => void;
+  onViewportReady?: (el: HTMLDivElement | null) => void;
   midiStart?: number;
   midiEnd?: number;
 }
+
+const WHITE_KEY_WIDTH = 28;
+const WHITE_KEY_HEIGHT = 188;
 
 export const Piano: React.FC<PianoProps> = ({
   activeNotes,
@@ -19,53 +22,36 @@ export const Piano: React.FC<PianoProps> = ({
   onNoteOn,
   onNoteOff,
   onKeyRectsReady,
-  midiStart = 48, // C3
-  midiEnd = 84,   // C6
+  onViewportReady,
+  midiStart = 21,
+  midiEnd = 108,
 }) => {
   const notes = useMemo(() => generateNotes(midiStart, midiEnd), [midiStart, midiEnd]);
-  const whiteNotes = useMemo(() => notes.filter((n) => !n.isBlack), [notes]);
-  const containerRef = useRef<HTMLDivElement>(null);
-  const keyElementsRef = useRef<Map<string, HTMLDivElement>>(new Map());
-  const [containerWidth, setContainerWidth] = useState(0);
-
+  const whiteNotes = useMemo(() => notes.filter((note) => !note.isBlack), [notes]);
+  const blackNotes = useMemo(() => notes.filter((note) => note.isBlack), [notes]);
   const whiteCount = useMemo(() => countWhiteKeys(notes), [notes]);
-
-  // Responsive sizing
-  useEffect(() => {
-    const el = containerRef.current;
-    if (!el) return;
-    const ro = new ResizeObserver((entries) => {
-      setContainerWidth(entries[0].contentRect.width);
-    });
-    ro.observe(el);
-    setContainerWidth(el.getBoundingClientRect().width);
-    return () => ro.disconnect();
-  }, []);
-
-  const whiteKeyWidth = containerWidth > 0 ? containerWidth / whiteCount : 28;
-  const whiteKeyHeight = Math.min(200, whiteKeyWidth * 5.5);
+  const keyElementsRef = useRef<Map<string, HTMLDivElement>>(new Map());
+  const keyboardWidth = whiteCount * WHITE_KEY_WIDTH;
 
   const registerRect = useCallback((id: string, el: HTMLDivElement) => {
     keyElementsRef.current.set(id, el);
-    // Notify parent whenever we have all keys registered
     if (keyElementsRef.current.size === notes.length) {
       onKeyRectsReady(new Map(keyElementsRef.current));
     }
   }, [notes.length, onKeyRectsReady]);
 
-  // Build layout: white keys in a row, black keys absolutely positioned
-  const blackNotes = useMemo(() => notes.filter((n) => n.isBlack), [notes]);
+  const handleViewportRef = useCallback((el: HTMLDivElement | null) => {
+    onViewportReady?.(el);
+  }, [onViewportReady]);
 
   return (
     <div
-      ref={containerRef}
       style={{
         width: '100%',
         position: 'relative',
         userSelect: 'none',
       }}
     >
-      {/* Piano body shadow / frame */}
       <div
         style={{
           background: 'linear-gradient(to bottom, #0f172a, #1e293b)',
@@ -76,64 +62,88 @@ export const Piano: React.FC<PianoProps> = ({
           position: 'relative',
         }}
       >
-        {/* Piano brand strip */}
         <div
           style={{
-            textAlign: 'center',
-            padding: '4px 0 10px',
-            fontFamily: "'Playfair Display', serif",
-            fontSize: 13,
-            letterSpacing: '0.3em',
-            color: 'rgba(251, 191, 36, 0.5)',
-            textTransform: 'uppercase',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            gap: 12,
+            padding: '4px 2px 10px',
+            color: 'rgba(251, 191, 36, 0.55)',
           }}
         >
-          Hand Piano
+          <span
+            style={{
+              fontFamily: "'Playfair Display', serif",
+              fontSize: 13,
+              letterSpacing: '0.3em',
+              textTransform: 'uppercase',
+            }}
+          >
+            Hand Piano
+          </span>
+          <span
+            style={{
+              fontFamily: "'DM Mono', monospace",
+              fontSize: 10,
+              letterSpacing: '0.08em',
+              whiteSpace: 'nowrap',
+            }}
+          >
+            88 KEYS - A0-C8
+          </span>
         </div>
 
-        {/* Keys container */}
         <div
+          ref={handleViewportRef}
           style={{
             position: 'relative',
-            height: whiteKeyHeight,
-            display: 'flex',
-            flexDirection: 'row',
-            overflow: 'hidden',
+            overflowX: 'auto',
+            overflowY: 'hidden',
             borderRadius: '4px 4px 0 0',
+            scrollbarColor: 'rgba(251,191,36,0.35) transparent',
           }}
         >
-          {/* White keys */}
-          {whiteNotes.map((note) => (
-            <PianoKey
-              key={note.id}
-              note={note}
-              isActive={activeNotes.has(note.id)}
-              isHighlighted={highlightedNotes.has(note.id)}
-              onNoteOn={onNoteOn}
-              onNoteOff={onNoteOff}
-              onRegisterRect={registerRect}
-              whiteKeyWidth={whiteKeyWidth}
-              whiteKeyHeight={whiteKeyHeight}
-            />
-          ))}
+          <div
+            style={{
+              position: 'relative',
+              width: keyboardWidth,
+              minWidth: keyboardWidth,
+              height: WHITE_KEY_HEIGHT,
+              display: 'flex',
+              flexDirection: 'row',
+            }}
+          >
+            {whiteNotes.map((note) => (
+              <PianoKey
+                key={note.id}
+                note={note}
+                isActive={activeNotes.has(note.id)}
+                isHighlighted={highlightedNotes.has(note.id)}
+                onNoteOn={onNoteOn}
+                onNoteOff={onNoteOff}
+                onRegisterRect={registerRect}
+                whiteKeyWidth={WHITE_KEY_WIDTH}
+                whiteKeyHeight={WHITE_KEY_HEIGHT}
+              />
+            ))}
 
-          {/* Black keys – absolutely positioned */}
-          {blackNotes.map((note) => (
-            <PianoKey
-              key={note.id}
-              note={note}
-              isActive={activeNotes.has(note.id)}
-              isHighlighted={highlightedNotes.has(note.id)}
-              onNoteOn={onNoteOn}
-              onNoteOff={onNoteOff}
-              onRegisterRect={registerRect}
-              whiteKeyWidth={whiteKeyWidth}
-              whiteKeyHeight={whiteKeyHeight}
-            />
-          ))}
+            {blackNotes.map((note) => (
+              <PianoKey
+                key={note.id}
+                note={note}
+                isActive={activeNotes.has(note.id)}
+                isHighlighted={highlightedNotes.has(note.id)}
+                onNoteOn={onNoteOn}
+                onNoteOff={onNoteOff}
+                onRegisterRect={registerRect}
+                whiteKeyWidth={WHITE_KEY_WIDTH}
+                whiteKeyHeight={WHITE_KEY_HEIGHT}
+              />
+            ))}
+          </div>
         </div>
 
-        {/* Bottom ledge */}
         <div
           style={{
             height: 16,

@@ -9,6 +9,7 @@ interface CameraPreviewProps {
   onStopCamera: () => void;
   error: string | null;
   visible: boolean;
+  mirrored?: boolean;
 }
 
 export const CameraPreview: React.FC<CameraPreviewProps> = ({
@@ -19,6 +20,7 @@ export const CameraPreview: React.FC<CameraPreviewProps> = ({
   onStopCamera,
   error,
   visible,
+  mirrored = true,
 }) => {
   if (!visible) return null;
 
@@ -71,7 +73,7 @@ export const CameraPreview: React.FC<CameraPreviewProps> = ({
             height: '100%',
             objectFit: 'cover',
             display: status === 'active' ? 'block' : 'none',
-            transform: 'scaleX(-1)', // mirror
+            transform: mirrored ? 'scaleX(-1)' : 'none',
           }}
         />
         <canvas
@@ -83,7 +85,7 @@ export const CameraPreview: React.FC<CameraPreviewProps> = ({
             width: '100%',
             height: '100%',
             pointerEvents: 'none',
-            transform: 'scaleX(-1)',
+            transform: mirrored ? 'scaleX(-1)' : 'none',
           }}
         />
 
@@ -111,7 +113,7 @@ export const CameraPreview: React.FC<CameraPreviewProps> = ({
             )}
             {status === 'requesting' && (
               <p style={{ color: 'rgba(251, 191, 36, 0.8)', fontSize: 12, textAlign: 'center' }}>
-                Requesting camera…
+                Requesting camera...
               </p>
             )}
             {(status === 'denied' || status === 'error') && (

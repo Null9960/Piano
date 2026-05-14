@@ -4,8 +4,8 @@ import type { PianoNote } from '../utils/notes';
 interface PianoKeyProps {
   note: PianoNote;
   isActive: boolean;
-  isHighlighted?: boolean; // camera fingertip hovering
-  onNoteOn: (noteId: string) => void;
+  isHighlighted?: boolean;
+  onNoteOn: (noteId: string, velocity?: number) => void;
   onNoteOff: (noteId: string) => void;
   onRegisterRect: (id: string, el: HTMLDivElement) => void;
   whiteKeyWidth: number;
@@ -31,14 +31,14 @@ export const PianoKey: React.FC<PianoKeyProps> = ({
     }
   }, [note.id, onRegisterRect]);
 
-  const handlePointerDown = (e: React.PointerEvent) => {
-    e.preventDefault();
+  const handlePointerDown = (event: React.PointerEvent) => {
+    event.preventDefault();
     pointerDown.current = true;
-    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
-    onNoteOn(note.id);
+    event.currentTarget.setPointerCapture(event.pointerId);
+    onNoteOn(note.id, 0.82);
   };
 
-  const handlePointerUp = (e: React.PointerEvent) => {
+  const handlePointerUp = () => {
     if (!pointerDown.current) return;
     pointerDown.current = false;
     onNoteOff(note.id);
@@ -52,8 +52,9 @@ export const PianoKey: React.FC<PianoKeyProps> = ({
   };
 
   if (note.isBlack) {
-    const bw = whiteKeyWidth * 0.6;
-    const bh = whiteKeyHeight * 0.62;
+    const blackWidth = whiteKeyWidth * 0.62;
+    const blackHeight = whiteKeyHeight * 0.62;
+    const left = (note.whiteIndex + 1) * whiteKeyWidth - blackWidth / 2;
 
     return (
       <div
@@ -61,29 +62,30 @@ export const PianoKey: React.FC<PianoKeyProps> = ({
         data-note={note.id}
         onPointerDown={handlePointerDown}
         onPointerUp={handlePointerUp}
+        onPointerCancel={handlePointerUp}
         onPointerLeave={handlePointerLeave}
         style={{
           position: 'absolute',
-          width: bw,
-          height: bh,
-          // Left offset: placed at whiteIndex * whiteKeyWidth + offset
-          left: note.whiteIndex * whiteKeyWidth + whiteKeyWidth * BLACK_KEY_OFFSETS_VISUAL[note.name as 'C#' | 'D#' | 'F#' | 'G#' | 'A#'],
+          width: blackWidth,
+          height: blackHeight,
+          left,
           top: 0,
           zIndex: 2,
           cursor: 'pointer',
           userSelect: 'none',
           touchAction: 'none',
-          borderRadius: '0 0 6px 6px',
+          borderRadius: '0 0 5px 5px',
           background: isActive
             ? 'linear-gradient(to bottom, #f59e0b, #d97706)'
             : isHighlighted
-            ? 'linear-gradient(to bottom, #374151, #4b5563)'
-            : 'linear-gradient(to bottom, #1f2937, #111827)',
+              ? 'linear-gradient(to bottom, #374151, #4b5563)'
+              : 'linear-gradient(to bottom, #1f2937, #050816)',
           boxShadow: isActive
-            ? '0 2px 8px rgba(245, 158, 11, 0.6), inset 0 -2px 4px rgba(0,0,0,0.3)'
-            : '2px 4px 8px rgba(0,0,0,0.7), inset 0 -2px 4px rgba(0,0,0,0.4)',
-          border: '1px solid rgba(255,255,255,0.05)',
-          transition: 'background 0.06s ease, box-shadow 0.06s ease',
+            ? '0 2px 9px rgba(245, 158, 11, 0.62), inset 0 -2px 4px rgba(0,0,0,0.3)'
+            : '2px 4px 9px rgba(0,0,0,0.75), inset 0 -2px 4px rgba(0,0,0,0.45)',
+          border: '1px solid rgba(255,255,255,0.06)',
+          transition: 'background 0.05s ease, box-shadow 0.05s ease, transform 0.05s ease',
+          transform: isActive ? 'translateY(2px)' : 'translateY(0)',
           display: 'flex',
           alignItems: 'flex-end',
           justifyContent: 'center',
@@ -93,11 +95,11 @@ export const PianoKey: React.FC<PianoKeyProps> = ({
         {isActive && (
           <div
             style={{
-              width: 8,
-              height: 8,
+              width: 7,
+              height: 7,
               borderRadius: '50%',
-              background: 'rgba(255,255,255,0.9)',
-              boxShadow: '0 0 6px rgba(251, 191, 36, 0.8)',
+              background: 'rgba(255,255,255,0.92)',
+              boxShadow: '0 0 6px rgba(251, 191, 36, 0.9)',
             }}
           />
         )}
@@ -105,35 +107,37 @@ export const PianoKey: React.FC<PianoKeyProps> = ({
     );
   }
 
-  // White key
-  const showLabel = note.name === 'C';
+  const showLabel = note.name === 'C' || note.id === 'A0';
+
   return (
     <div
       ref={divRef}
       data-note={note.id}
       onPointerDown={handlePointerDown}
       onPointerUp={handlePointerUp}
+      onPointerCancel={handlePointerUp}
       onPointerLeave={handlePointerLeave}
       style={{
         position: 'relative',
-        width: whiteKeyWidth - 2,
+        width: whiteKeyWidth,
         height: whiteKeyHeight,
-        margin: '0 1px',
         cursor: 'pointer',
         userSelect: 'none',
         touchAction: 'none',
         flexShrink: 0,
-        borderRadius: '0 0 8px 8px',
+        borderRadius: '0 0 7px 7px',
         background: isActive
           ? 'linear-gradient(to bottom, #fef3c7, #fbbf24)'
           : isHighlighted
-          ? 'linear-gradient(to bottom, #e5e7eb, #d1d5db)'
-          : 'linear-gradient(to bottom, #f9fafb, #e5e7eb)',
+            ? 'linear-gradient(to bottom, #e5e7eb, #d1d5db)'
+            : 'linear-gradient(to bottom, #ffffff, #e5e7eb)',
         boxShadow: isActive
-          ? '0 4px 12px rgba(245, 158, 11, 0.5), inset 0 -3px 6px rgba(0,0,0,0.15)'
-          : '1px 4px 8px rgba(0,0,0,0.4), inset 0 -2px 4px rgba(0,0,0,0.1)',
-        border: '1px solid rgba(0,0,0,0.15)',
-        transition: 'background 0.06s ease, box-shadow 0.06s ease',
+          ? '0 4px 12px rgba(245, 158, 11, 0.5), inset 0 -6px 7px rgba(0,0,0,0.17)'
+          : '1px 4px 8px rgba(0,0,0,0.42), inset 0 -3px 4px rgba(0,0,0,0.11)',
+        border: '1px solid rgba(0,0,0,0.16)',
+        borderTop: 'none',
+        transition: 'background 0.05s ease, box-shadow 0.05s ease, transform 0.05s ease',
+        transform: isActive ? 'translateY(3px)' : 'translateY(0)',
         display: 'flex',
         alignItems: 'flex-end',
         justifyContent: 'center',
@@ -144,12 +148,14 @@ export const PianoKey: React.FC<PianoKeyProps> = ({
       {showLabel && (
         <span
           style={{
-            fontSize: Math.max(10, whiteKeyWidth * 0.35),
+            fontSize: 10,
             fontFamily: "'DM Mono', monospace",
             fontWeight: 600,
             color: isActive ? '#92400e' : '#6b7280',
-            letterSpacing: '-0.02em',
+            letterSpacing: 0,
             pointerEvents: 'none',
+            writingMode: 'vertical-rl',
+            transform: 'rotate(180deg)',
           }}
         >
           {note.id}
@@ -157,13 +163,4 @@ export const PianoKey: React.FC<PianoKeyProps> = ({
       )}
     </div>
   );
-};
-
-// Visual offsets for black keys (as fraction of white key width from the left of the preceding white key)
-const BLACK_KEY_OFFSETS_VISUAL: Record<'C#' | 'D#' | 'F#' | 'G#' | 'A#', number> = {
-  'C#': 0.64,
-  'D#': 0.64,
-  'F#': 0.64,
-  'G#': 0.64,
-  'A#': 0.64,
 };

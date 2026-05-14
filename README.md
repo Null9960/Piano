@@ -1,10 +1,8 @@
-# 🎹 Hand Piano
+# Hand Piano
 
-A browser-based interactive piano playable via **webcam hand-tracking**, **keyboard**, **mouse**, or **touch**.
+A browser-based 88-key piano playable with webcam hand tracking, computer keyboard, mouse, or touch.
 
-Built with React + Vite + TypeScript · Tone.js · MediaPipe Hands.
-
----
+Built with React, Vite, TypeScript, Tone.js, Web Audio, and MediaPipe Hands.
 
 ## Quick Start
 
@@ -14,7 +12,10 @@ npm run dev
 # Open http://localhost:5173
 ```
 
-### Build for Production
+The install/build scripts copy MediaPipe runtime assets from `@mediapipe/hands` into `public/mediapipe/hands` so camera tracking can run from the app origin instead of depending on a runtime CDN.
+
+## Production Build
+
 ```bash
 npm run build
 npm run preview
@@ -22,91 +23,63 @@ npm run preview
 
 Deploy `dist/` to Vercel or Netlify. For GitHub Pages, set `base: '/Piano/'` in `vite.config.ts` before building.
 
----
-
-## How to Play
+## How To Play
 
 ### Audio
-The app now uses `Tone.Sampler` with piano samples loaded from the public Salamander sample set used by Tone.js examples.
 
-Important:
-- Browser audio must be unlocked by a user gesture.
-- Click/tap a piano key or press a mapped keyboard key once to unlock audio.
-- Samples require internet access unless they are later bundled locally.
+Click **Enable Audio and Load Grand Piano** once. Browser audio policies require a user gesture before Tone.js can start the audio context.
 
-### Keyboard Map
+The app uses `Tone.Sampler` with the Salamander Grand Piano sample map across A0-C8. If samples fail to load, a synth fallback remains available, but the realistic piano tone depends on the sampled instrument.
+
+### Webcam Hand Performance
+
+1. Click **Enable Camera** and grant permission.
+2. Keep both hands visible above the keyboard.
+3. Move each fingertip horizontally over a target key.
+4. Strike downward with any finger to trigger a note.
+5. Lift upward to release it.
+
+All five fingers on both hands are tracked independently, so chords and multi-finger passages are supported. Strike velocity is converted into note velocity for more natural dynamics.
+
+### Camera Mapping
+
+The default **Visible Range** mode maps the camera width to the keys currently visible in the horizontal piano viewport. Scroll the keyboard to choose a register. Turning this setting off maps the camera across the entire 88-key span.
+
+### Computer Keyboard Map
+
 | Keys | Notes |
 |---|---|
 | Z X C V B N M | C3 D3 E3 F3 G3 A3 B3 |
-| S D  G H J | C#3 D#3  F#3 G#3 A#3 |
-| Q W E R T Y U I | C4–C5 |
-| 2 3  5 6 7 | C#4 D#4  F#4 G#4 A#4 |
-
-### Hand Tracking
-1. Click **Enable Camera** → grant permission.
-2. Hold hand in front of webcam, index finger extended.
-3. Move fingertip over a key, then press down quickly to trigger.
-
----
-
-## Camera Troubleshooting
-
-If camera permission is granted but hand tracking does not work:
-
-1. Use Chrome first.
-2. Use `localhost` or an HTTPS deployment.
-3. If using StackBlitz/CodeSandbox, open the preview in a separate browser tab.
-4. Check browser console for MediaPipe loading errors.
-5. MediaPipe currently loads runtime files from CDN and requires internet access.
-6. If the camera preview works but hands are not detected, the likely failure is MediaPipe runtime loading or `hands.send()`.
-
----
+| S D G H J | C#3 D#3 F#3 G#3 A#3 |
+| Q W E R T Y U I | C4 D4 E4 F4 G4 A4 B4 C5 |
+| 2 3 5 6 7 | C#4 D#4 F#4 G#4 A#4 |
 
 ## Project Structure
 
-```
+```text
+scripts/
+  copy-mediapipe-assets.mjs
 src/
-  components/  Piano, PianoKey, CameraPreview, SettingsPanel, HUD
-  hooks/       usePianoAudio, useHandTracking, useKeyboardPiano
-  utils/       notes.ts, gestureDetection.ts, audioSamples.ts
+  components/  Piano, PianoKey, CameraPreview, SettingsPanel, HUD, AudioGate
+  config/      settings.ts
+  hooks/       usePianoAudio, useHandTracking, useHandPressurePianoControl, useKeyboardPiano
+  utils/       notes.ts, gestureDetection.ts, audioSamples.ts, loadMediaPipeHands.ts
   App.tsx
+  AppPiano.tsx
 ```
 
-## Current Range
+## Reliability Notes
 
-The current keyboard range is C3–C6. This is intentional for the MVP because camera control is not precise enough for a full 88-key layout yet.
+- Camera access requires HTTPS or localhost.
+- MediaPipe assets are copied locally during install/build.
+- Audio samples still load from a public sample host unless bundled separately.
+- Hand control is geometry-based: MediaPipe landmarks feed a smoothing layer, downward velocity detection, key-travel pressure estimation, and per-finger note ownership.
+- A real camera is still needed to validate lighting, background, and device-specific tracking quality.
 
-## Extend to 88 Keys Later
+## Useful Commands
 
-```tsx
-<Piano midiStart={21} midiEnd={108} ... />
+```bash
+npm run copy:mediapipe
+npm run lint
+npm run build
 ```
-
-A real 88-key mode should add horizontal scrolling, viewport mapping, and calibration before being exposed to users.
-
----
-
-## Known Limitations
-
-1. MediaPipe loads from CDN on first use.
-2. Camera press is delta-based Y movement, not physical contact.
-3. Hand-to-key mapping still needs calibration and stronger diagnostics.
-4. Audio samples load from a public CDN.
-5. Camera requires HTTPS; localhost is allowed.
-6. Advanced gestures are not implemented yet.
-
----
-
-## Suggested Next Steps
-
-- Harden `useHandTracking` with detailed MediaPipe diagnostics.
-- Add explicit Enable Audio button wired in `App.tsx`.
-- Add a visible fingertip cursor/debug overlay.
-- Fix camera/video/canvas mirroring consistency.
-- Bundle MediaPipe and piano samples locally for reliability.
-- Add two-hand polyphonic control.
-- Add velocity from fingertip downward speed.
-
----
-
-*React 19 · Tone.js 15 · MediaPipe Hands 0.4*
