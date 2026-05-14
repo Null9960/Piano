@@ -9,6 +9,7 @@ interface CameraPreviewProps {
   onStopCamera: () => void;
   error: string | null;
   visible: boolean;
+  mirrored?: boolean;
 }
 
 export const CameraPreview: React.FC<CameraPreviewProps> = ({
@@ -19,8 +20,11 @@ export const CameraPreview: React.FC<CameraPreviewProps> = ({
   onStopCamera,
   error,
   visible,
+  mirrored = true,
 }) => {
   if (!visible) return null;
+
+  const previewTransform = mirrored ? 'scaleX(-1)' : 'none';
 
   return (
     <div
@@ -35,7 +39,6 @@ export const CameraPreview: React.FC<CameraPreviewProps> = ({
         flexShrink: 0,
       }}
     >
-      {/* Header */}
       <div
         style={{
           padding: '8px 12px',
@@ -59,7 +62,6 @@ export const CameraPreview: React.FC<CameraPreviewProps> = ({
         <StatusDot status={status} />
       </div>
 
-      {/* Video area */}
       <div style={{ position: 'relative', aspectRatio: '4/3', background: '#020617' }}>
         <video
           ref={videoRef as React.RefObject<HTMLVideoElement>}
@@ -71,7 +73,7 @@ export const CameraPreview: React.FC<CameraPreviewProps> = ({
             height: '100%',
             objectFit: 'cover',
             display: status === 'active' ? 'block' : 'none',
-            transform: 'scaleX(-1)', // mirror
+            transform: previewTransform,
           }}
         />
         <canvas
@@ -83,11 +85,10 @@ export const CameraPreview: React.FC<CameraPreviewProps> = ({
             width: '100%',
             height: '100%',
             pointerEvents: 'none',
-            transform: 'scaleX(-1)',
+            transform: previewTransform,
           }}
         />
 
-        {/* Overlay when not active */}
         {status !== 'active' && (
           <div
             style={{
@@ -111,7 +112,7 @@ export const CameraPreview: React.FC<CameraPreviewProps> = ({
             )}
             {status === 'requesting' && (
               <p style={{ color: 'rgba(251, 191, 36, 0.8)', fontSize: 12, textAlign: 'center' }}>
-                Requesting camera…
+                Requesting camera...
               </p>
             )}
             {(status === 'denied' || status === 'error') && (
@@ -128,7 +129,6 @@ export const CameraPreview: React.FC<CameraPreviewProps> = ({
         )}
       </div>
 
-      {/* Controls */}
       <div style={{ padding: '8px 12px' }}>
         {status === 'idle' || status === 'denied' || status === 'error' ? (
           <button
