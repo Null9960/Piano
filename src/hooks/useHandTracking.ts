@@ -36,7 +36,9 @@ type HandsInstance = {
 
 const DEFAULT_TARGET_FPS = 30;
 const MAX_CONSECUTIVE_SEND_FAILURES = 3;
-const MEDIAPIPE_ASSET_BASE = `${import.meta.env.BASE_URL}mediapipe/hands/`;
+const MEDIAPIPE_HANDS_VERSION = '0.4.1675469240';
+const LOCAL_MEDIAPIPE_ASSET_BASE = `${import.meta.env.BASE_URL}mediapipe/hands/`;
+const CDN_MEDIAPIPE_ASSET_BASE = `https://cdn.jsdelivr.net/npm/@mediapipe/hands@${MEDIAPIPE_HANDS_VERSION}/`;
 
 export function useHandTracking({
   enabled,
@@ -228,8 +230,9 @@ export function useHandTracking({
 
       console.info('[HandTracking] loading MediaPipe Hands');
       const Hands = await loadMediaPipeHandsConstructor();
+      const mediaPipeAssetBase = await resolveMediaPipeAssetBase();
       const handsInstance = new Hands({
-        locateFile: (file: string) => `${MEDIAPIPE_ASSET_BASE}${file}`,
+        locateFile: (file: string) => `${mediaPipeAssetBase}${file}`,
       }) as HandsInstance;
 
       handsInstance.setOptions({
@@ -298,4 +301,36 @@ export function useHandTracking({
   }, [enabled, cameraStatus, stopCamera]);
 
   return { cameraStatus, startCamera, stopCamera, error };
+}
+
+async function resolveMediaPipeAssetBase() {
+  const envBase = import.meta.env.VITE_MEDIAPIPE_ASSET_BASE as string | undefined;
+  if (envBase) return ensureTrailingSlash(envBase);
+
+  if (isStackBlitzLikeHost()) {
+    return CDN_MEDIAPIPE_ASSET_BASE;
+  }
+
+  try {
+    const response = await fetch(`${LOCAL_MEDIAPIPE_ASSET_BASE}hands.binarypb`, {
+      method: 'HEAD',
+      cache: 'no-store',
+    });
+    if (response.ok) return LOCAL_MEDIAPIPE_ASSET_BASE;
+  } catch {
+    // Continue to CDN fallback.
+  }
+
+  console.warn('[HandTracking] Local MediaPipe assets unavailable; using CDN fallback.');
+  return CDN_MEDIAPIPE_ASSET_BASE;
+}
+
+function isStackBlitzLikeHost() {
+  if (typeof window === 'undefined') return false;
+  const host = window.location.hostname.toLowerCase();
+  return host.includes('stackblitz') || host.includes('webcontainer');
+}
+
+function ensureTrailingSlash(value: string) {
+  return value.endsWith('/') ? value : `${value}/`;
 }

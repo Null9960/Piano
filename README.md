@@ -12,7 +12,7 @@ npm run dev
 # Open http://localhost:5173
 ```
 
-The install/build scripts copy MediaPipe runtime assets from `@mediapipe/hands` into `public/mediapipe/hands` so camera tracking can run from the app origin instead of depending on a runtime CDN.
+The install/build scripts try to copy MediaPipe runtime assets from `@mediapipe/hands` into `public/mediapipe/hands` so camera tracking can run from the app origin. If a hosted editor such as StackBlitz blocks filesystem copies, the app continues to start and automatically falls back to the jsDelivr MediaPipe CDN at runtime.
 
 ## Production Build
 
@@ -71,7 +71,7 @@ src/
 ## Reliability Notes
 
 - Camera access requires HTTPS or localhost.
-- MediaPipe assets are copied locally during install/build.
+- MediaPipe assets are copied locally during install/build when the filesystem allows it. StackBlitz and similar WebContainer environments use CDN fallback automatically.
 - Audio samples still load from a public sample host unless bundled separately.
 - Hand control is geometry-based: MediaPipe landmarks feed a smoothing layer, downward velocity detection, key-travel pressure estimation, and per-finger note ownership.
 - A real camera is still needed to validate lighting, background, and device-specific tracking quality.

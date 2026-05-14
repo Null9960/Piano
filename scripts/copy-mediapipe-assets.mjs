@@ -21,20 +21,49 @@ const assets = [
   'hand_landmark_lite.tflite',
 ];
 
-if (!existsSync(sourceDir)) {
-  console.warn('[mediapipe] @mediapipe/hands is not installed; skipping asset copy.');
-  process.exit(0);
-}
-
-await mkdir(targetDir, { recursive: true });
-
-for (const asset of assets) {
-  const source = join(sourceDir, asset);
-  if (!existsSync(source)) {
-    console.warn(`[mediapipe] Missing ${asset}; skipping.`);
-    continue;
+async function main() {
+  if (!existsSync(sourceDir)) {
+    console.warn('[mediapipe] @mediapipe/hands is not installed; camera will use CDN fallback.');
+    return;
   }
-  await copyFile(source, join(targetDir, asset));
+
+  try {
+    await mkdir(targetDir, { recursive: true });
+  } catch (error) {
+    console.warn(`[mediapipe] Cannot create ${targetDir}; camera will use CDN fallback.`);
+    console.warn(`[mediapipe] ${formatError(error)}`);
+    return;
+  }
+
+  let copied = 0;
+  for (const asset of assets) {
+    const source = join(sourceDir, asset);
+    if (!existsSync(source)) {
+      console.warn(`[mediapipe] Missing ${asset}; skipping.`);
+      continue;
+    }
+
+    try {
+      await copyFile(source, join(targetDir, asset));
+      copied += 1;
+    } catch (error) {
+      console.warn(`[mediapipe] Could not copy ${asset}; skipping local MediaPipe asset.`);
+      console.warn(`[mediapipe] ${formatError(error)}`);
+    }
+  }
+
+  if (copied === assets.length) {
+    console.log(`[mediapipe] Copied ${copied} Hands assets to public/mediapipe/hands.`);
+  } else {
+    console.warn(`[mediapipe] Copied ${copied}/${assets.length} Hands assets. Missing assets will fall back to CDN at runtime.`);
+  }
 }
 
-console.log(`[mediapipe] Copied ${assets.length} Hands assets to public/mediapipe/hands.`);
+function formatError(error) {
+  if (error && typeof error === 'object' && 'code' in error) {
+    return `${error.code}: ${error.message}`;
+  }
+  return error instanceof Error ? error.message : String(error);
+}
+
+await main();
